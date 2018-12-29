@@ -1,13 +1,74 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
+	"log"
 	"strconv"
 	"strings"
+	"syscall"
+	"unsafe"
 )
+
+/**
+这是从RFC791 拉下来的IP header
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |Version|  IHL  |Type of Service|          Total Length         |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |         Identification        |Flags|      Fragment Offset    |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  Time to Live |    Protocol   |         Header Checksum       |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                       Source Address                          |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                    Destination Address                        |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                    Options                    |    Padding    |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+                    Example Internet Datagram Header
+
+●Version（版本）：占4比特，用来表明IP协议实现的版本号，当前一般为IPv4，即0100。
+
+●IHL（报头长度）：占4比特，表示头部占32比特的长度是多少，比如说不包含任何选项的IP数据报，从上图可以看出到 Destination Address为止， 32x5=160比特=20字节，此字段最大值为60字节。
+
+●Type of Service（服务类型）：占8个比特，其中前3比特为优先权子字段（Precedence，现已被忽略）。第8比特保留未用。第4至第7比特分别代表延迟、吞吐量、可靠性和花费。当它们取值为1时分别代表要求最小时延、最大吞吐量、最高可靠性和最小费用。这4比特的服务类型中只能置其中1比特为1。可以全为0，若全为0则表示一般服务。服务类型字段声明了数据报被网络系统传输时可以被怎样处理。
+
+      Bits 0-2:  Precedence.
+      Bit    3:  0 = Normal Delay,      1 = Low Delay.
+      Bits   4:  0 = Normal Throughput, 1 = High Throughput.
+      Bits   5:  0 = Normal Relibility, 1 = High Relibility.
+      Bit    6:  0 = Normal Cost, 1 = High cost.
+      Bit    7:  Reserved for Future Use.
+
+         0     1     2     3     4     5     6     7
+      +-----+-----+-----+-----+-----+-----+-----+-----+
+      |                 |     |     |     |     |     |
+      |   PRECEDENCE    |  D  |  T  |  R  |  0  |  0  |
+      |                 |     |     |     |     |     |
+      +-----+-----+-----+-----+-----+-----+-----+-----+
+
+●Total Length（总长度字段）：占16比特。指明整个数据报的长度（以字节为单位）。最大长度为65535字节。
+●Identification（标识）：占16比特。用来唯一地标识主机发送的每一份数据报。通常每发一份报文，它的值会加1。
+●Flags（标志位）：占3比特，表示这份报文是否需要分片传输。
+●TTL（生存期）：占8比特，用来表示该数据报文最多可以经过的路由器数，没经过一个路由器都减1，直到为0数据包丢掉。
+●Protocal(协议字段)：占8比特，用来指出IP层所封装的上层协议类型，如传输层TCP/UDP/ICMP/IGMP。
+●Header checksum(头部校验和字段)：占16比特，内容是根据IP头部计算得到的校验和码。计算方法是：对头部中每个16比特进行二进制反码求和。（和ICMP、IGMP、TCP、UDP不同，IP不对头部后的数据进行校验）。
+●source address&&Dest address:源地址和目的地址，各占32字节，当然这个是针对的IPV4
+●Option:占32比特。用来定义一些任选项：如记录路径、时间戳等。这些选项很少被使用，同时并不是所有主机和路由器都支持这些选项。可选项字段的长度必须是32比特的整数倍，如果不足，必须填充0以达到此长度要求。
+ */
+
+
+
+
+
 
 //Tcp头部
 /**
-    0                   1                   2                   3
+	0                   1                   2                   3
     0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
    |                        Source address                         |
@@ -157,4 +218,64 @@ func CheckSum(data []byte)uint16  {
 	sum += (sum >> 16)
 
 	return uint16(^sum)
+}
+
+func main() {
+	var(
+		msg string = "test"
+		psdHeader PsdHeader
+		tcpHeader TCPHeader
+	)
+
+	//填充tcp伪首部
+	psdHeader.SrcAddr = inet_addr("127.0.0.1")
+	psdHeader.DstAddr = inet_addr("127.0.0.1")
+	psdHeader.Zero = 0
+	psdHeader.ProtoType = syscall.IPPROTO_TCP
+	psdHeader.TcpLength = uint16(unsafe.Sizeof(TCPHeader{}))+uint16(len(msg))
+
+	//填充tcp首部
+	tcpHeader.SrcPort = htons(3000)
+	tcpHeader.DstPort = htons(8080)
+	tcpHeader.SeqNum = 0
+	tcpHeader.AckNum = 0
+	tcpHeader.Offset = uint8(uint16(unsafe.Sizeof(TCPHeader{}))/4)<<4
+	tcpHeader.Flag = 2	//SYN
+	tcpHeader.Window = 60000
+	tcpHeader.CheckSum = 0
+
+	/**buffer用来写入两种首部来求得校验和*/
+	var (
+		buffer bytes.Buffer
+	)
+	binary.Write(&buffer, binary.BigEndian, psdHeader)
+	binary.Write(&buffer, binary.BigEndian, tcpHeader)
+	tcpheader.Checksum = CheckSum(buffer.Bytes())
+
+	/*接下来清空buffer，填充实际要发送的部分*/
+	buffer.Reset()
+	binary.Write(&buffer, binary.BigEndian, tcpHeader)
+	binary.Write(&buffer, binary.BigEndian, msg)
+
+
+	/*下面的操作都是raw socket操作，大家都看得懂*/
+	var (
+		sockfd int
+		addr   syscall.SockaddrInet4
+		err    error
+	)
+	if sockfd, err = syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_TCP); err != nil {
+		log.Fatalf("Socket() error: %s", err.Error())
+		return
+	}
+	defer syscall.Shutdown(sockfd, syscall.SHUT_RDWR)
+	addr.Addr[0], addr.Addr[1], addr.Addr[2], addr.Addr[3] = 127, 0, 0, 1
+	addr.Port = 8080
+	if err = syscall.Sendto(sockfd, buffer.Bytes(), 0, &addr); err != nil {
+		log.Fatalf("Sendto() error: %s", err.Error())
+		return
+	}
+
+
+
 }
